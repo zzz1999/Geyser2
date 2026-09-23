@@ -34,12 +34,15 @@ import org.cloudburstmc.protocol.bedrock.data.InputMode;
 import org.cloudburstmc.protocol.bedrock.data.PlayerAuthInputData;
 import org.cloudburstmc.protocol.bedrock.data.entity.EntityFlag;
 import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket;
+import org.geysermc.geyser.entity.type.Entity;
 import org.geysermc.geyser.entity.type.player.SessionPlayerEntity;
+import org.geysermc.geyser.entity.vehicle.ClientVehicle;
 import org.geysermc.geyser.session.GeyserSession;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPlayerInputPacket;
 
 import java.util.Set;
 
+/** 缓存客户端按键状态并即时转发 Java 输入，避免将服务端控制坐骑的自动游泳动作当作手动跳跃。 */
 public final class InputCache {
     private final GeyserSession session;
     private ServerboundPlayerInputPacket inputPacket = new ServerboundPlayerInputPacket(false, false, false, false, false, false, false);
@@ -121,6 +124,9 @@ public final class InputCache {
         }
 
         boolean sneaking = isSneaking(bedrockInput);
+        Entity vehicle = entity.getVehicle();
+        boolean serverControlledCustomVehicle = vehicle != null
+            && vehicle.getCurIdentifier() != null && !(vehicle instanceof ClientVehicle);
 
         this.inputPacket = this.inputPacket
             .withForward(up)
@@ -130,8 +136,10 @@ public final class InputCache {
             // https://mojang.github.io/bedrock-protocol-docs/html/enums.html
             // using the "raw" values allows us sending key presses even with locked input
             // There appear to be cases where the raw value is not sent - e.g. sneaking with a shield on mobile (1.21.80)
-            // We also need to check for water auto jumping, since bedrock don't send jumping value in those cases.
-            .withJump(bedrockInput.contains(PlayerAuthInputData.JUMP_CURRENT_RAW) || bedrockInput.contains(PlayerAuthInputData.JUMP_DOWN) || bedrockInput.contains(PlayerAuthInputData.AUTO_JUMPING_IN_WATER))
+            // 原版玩家和客户端控制的载具仍保留自动游泳跳跃；服务端控制的自定义坐骑只接收真实按键。
+            .withJump(bedrockInput.contains(PlayerAuthInputData.JUMP_CURRENT_RAW)
+                || bedrockInput.contains(PlayerAuthInputData.JUMP_DOWN)
+                || (!serverControlledCustomVehicle && bedrockInput.contains(PlayerAuthInputData.AUTO_JUMPING_IN_WATER)))
             .withShift(session.isShouldSendSneak() || sneaking)
             .withSprint(bedrockInput.contains(PlayerAuthInputData.SPRINT_DOWN));
 

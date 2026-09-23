@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+/** 验证物品动画及自定义实体运行时映射的解析和非法配置拒绝。 */
 public class MappingsReaderV1Test {
 
     @Test
@@ -81,6 +82,34 @@ public class MappingsReaderV1Test {
 
         assertThrows(InvalidCustomMappingsFileException.class,
                 () -> MappingsReader_v1.readNeteaseFrameAnimationComponent(node));
+    }
+
+    @Test
+    void readsOptionalEntityRuntimeWithoutChangingCustomIdentity() throws InvalidCustomMappingsFileException {
+        var entry = new MappingsReader_v1().readEntityMappingEntry("realmsunderoath:mount_land", parse("""
+            {"runtime_identifier":"minecraft:horse", "collision_box":{"width":0.6,"height":0.85}}
+            """));
+        assertEquals("realmsunderoath:mount_land", entry.identifier());
+        assertEquals("minecraft:horse", entry.runtimeIdentifier());
+        assertEquals(0.6f, entry.width());
+        assertEquals(0.85f, entry.height());
+    }
+
+    @Test
+    void preservesUnconfiguredEntityRuntime() throws InvalidCustomMappingsFileException {
+        var entry = new MappingsReader_v1().readEntityMappingEntry("test:other", parse("{}"));
+        assertEquals("", entry.runtimeIdentifier());
+        assertEquals(1f, entry.width());
+        assertEquals(1f, entry.height());
+    }
+
+    @Test
+    void rejectsInvalidEntityRuntimeValues() {
+        for (String value : new String[] {"null", "42", "{}", "[]", "\"\"", "\"horse\"", "\"custom:horse\""}) {
+            assertThrows(InvalidCustomMappingsFileException.class,
+                () -> new MappingsReader_v1().readEntityMappingEntry("test:mount",
+                    parse("{\"runtime_identifier\":" + value + "}")));
+        }
     }
 
     private static JsonObject parse(String json) {

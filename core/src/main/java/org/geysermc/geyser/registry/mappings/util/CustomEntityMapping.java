@@ -25,5 +25,9 @@
 
 package org.geysermc.geyser.registry.mappings.util;
 
-public record CustomEntityMapping(String identifier, float width, float height) {
+/** 保存自定义实体的客户端标识、碰撞尺寸及可选原版运行时身份，不替换 Java 载体类型。 */
+public record CustomEntityMapping(String identifier, float width, float height, String runtimeIdentifier) {
+    public CustomEntityMapping(String identifier, float width, float height) {
+        this(identifier, width, height, "");
+    }
 }

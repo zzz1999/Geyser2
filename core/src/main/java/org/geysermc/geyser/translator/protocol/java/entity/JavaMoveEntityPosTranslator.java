@@ -31,13 +31,14 @@ import org.geysermc.geyser.translator.protocol.PacketTranslator;
 import org.geysermc.geyser.translator.protocol.Translator;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.ClientboundMoveEntityPosPacket;
 
+/** 转换 Java 实体常规状态广播，仅过滤本连接控制的白名单坐骑回显。 */
 @Translator(packet = ClientboundMoveEntityPosPacket.class)
 public class JavaMoveEntityPosTranslator extends PacketTranslator<ClientboundMoveEntityPosPacket> {
 
     @Override
     public void translate(GeyserSession session, ClientboundMoveEntityPosPacket packet) {
         Entity entity = session.getEntityCache().getEntityByJavaId(packet.getEntityId());
-        if (entity == null) return;
+        if (entity == null || entity.isLocallyControlledCustomMount()) return;
 
         entity.moveRelative(packet.getMoveX(), packet.getMoveY(), packet.getMoveZ(), entity.getYaw(), entity.getPitch(), entity.getHeadYaw(), packet.isOnGround());
     }

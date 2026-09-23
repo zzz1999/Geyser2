@@ -29,12 +29,18 @@ import lombok.Setter;
 import org.cloudburstmc.math.TrigMath;
 import org.cloudburstmc.math.vector.Vector3f;
 import org.cloudburstmc.protocol.bedrock.data.entity.EntityFlag;
+import org.cloudburstmc.protocol.bedrock.data.PlayerAuthInputData;
+import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket;
 import org.geysermc.geyser.entity.type.living.animal.horse.AbstractHorseEntity;
 import org.geysermc.geyser.entity.type.living.animal.horse.SkeletonHorseEntity;
 import org.geysermc.geyser.entity.type.player.SessionPlayerEntity;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.Effect;
 
+/** 模拟未由客户端预测的原版马骑乘物理，并以限次日志区分实际采用的移动路径。 */
 public class HorseVehicleComponent extends VehicleComponent<AbstractHorseEntity> {
+    private int diagnosticInputs;
+    private boolean reportedClientPrediction;
+    private boolean reportedOtherRoute;
     @Setter
     private float horseJumpStrength = 0.7f; // Not sent by vanilla Java server when spawned
     private int effectJumpBoost;
@@ -43,6 +49,37 @@ public class HorseVehicleComponent extends VehicleComponent<AbstractHorseEntity>
 
     public HorseVehicleComponent(AbstractHorseEntity vehicle) {
         super(vehicle, 1.5f);
+    }
+
+    @Override
+    public void onMount() {
+        super.onMount();
+        diagnosticInputs = 0;
+        reportedClientPrediction = false;
+        reportedOtherRoute = false;
+    }
+
+    public void observeClientInput(PlayerAuthInputPacket packet) {
+        boolean flag = packet.getInputData().contains(PlayerAuthInputData.IN_CLIENT_PREDICTED_IN_VEHICLE);
+        boolean matching = flag && packet.getPredictedVehicle() == vehicle.getGeyserId();
+        boolean clientRoute = vehicle.getSession().isInClientPredictedVehicle();
+        if (matching && clientRoute) {
+            if (reportedClientPrediction) {
+                return;
+            }
+            reportedClientPrediction = true;
+        } else {
+            if (reportedOtherRoute || ++diagnosticInputs < 100) {
+                return;
+            }
+            reportedOtherRoute = true;
+        }
+        String route = clientRoute ? "CLIENT_POSITION"
+            : vehicle.shouldSimulateMovement() ? "GEYSER_SIMULATION" : "NO_MOVEMENT";
+        vehicle.getSession().getGeyser().getLogger().info("[RealmsMount] 原版马骑乘对照：actor="
+            + vehicle.getGeyserId() + " predicted=" + packet.getPredictedVehicle()
+            + " vehicleFlag=" + flag + " idMatched=" + matching + " route=" + route
+            + " motion=" + packet.getMotion() + " position=" + packet.getPosition());
     }
 
     @Override

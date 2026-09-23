@@ -170,6 +170,7 @@ import org.geysermc.geyser.entity.type.player.AvatarEntity;
 import org.geysermc.geyser.entity.type.player.MannequinEntity;
 import org.geysermc.geyser.entity.type.player.PlayerEntity;
 import org.geysermc.geyser.registry.Registries;
+import org.geysermc.geyser.registry.populator.CustomEntityRegistryPopulator;
 import org.geysermc.geyser.translator.text.MessageTranslator;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.MetadataTypes;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.type.BooleanEntityMetadata;
@@ -180,6 +181,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 
+/** 定义原版实体及元数据翻译，在扩展注册事件完成后统一发布原版和自定义实体的属性表。 */
 public final class EntityDefinitions {
     public static final EntityDefinition<BoatEntity> ACACIA_BOAT;
     public static final EntityDefinition<ChestBoatEntity> ACACIA_CHEST_BOAT;
@@ -1378,6 +1380,7 @@ public final class EntityDefinitions {
                 Registries.BEDROCK_ENTITY_PROPERTIES.get().add(definition.registeredProperties().toNbtMap(definition.identifier()));
             }
         }
+        CustomEntityRegistryPopulator.populateProperties();
     }
 
     private static <T> void registerProperty(Identifier entityType, PropertyType<T, ?> property) {

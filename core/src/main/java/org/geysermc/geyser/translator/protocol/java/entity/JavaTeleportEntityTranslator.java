@@ -40,6 +40,7 @@ import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.Serve
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerPosRotPacket;
 
 
+/** 转发 Java 实体显式传送，确保客户端控制坐骑仍接收服务器纠错。 */
 @Translator(packet = ClientboundTeleportEntityPacket.class)
 public class JavaTeleportEntityTranslator extends PacketTranslator<ClientboundTeleportEntityPacket> {
 
@@ -72,7 +73,8 @@ public class JavaTeleportEntityTranslator extends PacketTranslator<ClientboundTe
         boolean hasRelativePosition = packet.getRelatives().contains(PositionElement.X)
             || packet.getRelatives().contains(PositionElement.Y)
             || packet.getRelatives().contains(PositionElement.Z);
-        boolean interpolate = (entity instanceof LivingEntity || hasRelativePosition)
+        boolean interpolate = !entity.isLocallyControlledCustomMount()
+            && (entity instanceof LivingEntity || hasRelativePosition)
             && currentJavaPosition.distance(position) < 4096.0;
 
         float newPitch = MathUtils.clamp(packet.getXRot()
@@ -82,7 +84,9 @@ public class JavaTeleportEntityTranslator extends PacketTranslator<ClientboundTe
         float lastPitch = entity.getPitch();
         float lastYaw = entity.getYaw();
 
-        if (interpolate) {
+        if (entity.isLocallyControlledCustomMount()) {
+            entity.moveAbsolute(position.toFloat(), newYaw, newPitch, newYaw, packet.isOnGround(), true);
+        } else if (interpolate) {
             entity.moveRelative(
                 position.getX() - currentJavaPosition.getX(),
                 position.getY() - currentJavaPosition.getY(),
@@ -105,7 +109,7 @@ public class JavaTeleportEntityTranslator extends PacketTranslator<ClientboundTe
         }
 
         entity.setMotion(deltaMovement);
-        if (deltaMovement.distanceSquared(Vector3f.ZERO) > 1.0E-8F) {
+        if (entity.isLocallyControlledCustomMount() || deltaMovement.distanceSquared(Vector3f.ZERO) > 1.0E-8F) {
             SetEntityMotionPacket motionPacket = new SetEntityMotionPacket();
             motionPacket.setRuntimeEntityId(entity.getGeyserId());
             motionPacket.setMotion(deltaMovement);

@@ -28,20 +28,27 @@ package org.geysermc.geyser.registry.populator;
 import org.cloudburstmc.nbt.NbtMap;
 import org.cloudburstmc.nbt.NbtType;
 import org.cloudburstmc.protocol.bedrock.data.entity.EntityDataTypes;
+import org.geysermc.geyser.GeyserImpl;
 import org.geysermc.geyser.entity.EntityDefinition;
 import org.geysermc.geyser.entity.type.Entity;
 import org.geysermc.geyser.entity.type.LivingEntity;
 import org.geysermc.geyser.entity.type.living.MobEntity;
+import org.geysermc.geyser.entity.type.living.animal.HappyGhastEntity;
 import org.geysermc.geyser.registry.Registries;
 import org.geysermc.geyser.registry.mappings.MappingsConfigReader;
+import org.geysermc.geyser.registry.mappings.util.CustomEntityMapping;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.MetadataTypes;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.type.BooleanEntityMetadata;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
+/** 注册自定义客户端实体与原生运行时身份，并在原版及扩展注册完成后发布专用属性表。 */
 public class CustomEntityRegistryPopulator {
     private static int rid = 10000;
+    private static final Set<NbtMap> pendingRuntimeProperties = new HashSet<>();
     private static EntityDefinition<LivingEntity> baseEntity;
 
     static {
@@ -73,7 +80,38 @@ public class CustomEntityRegistryPopulator {
 
     }
 
+    static NbtMap createNetworkEntry(CustomEntityMapping mapping, int runtimeId, List<NbtMap> vanillaEntities) {
+        String runtimeIdentifier = mapping.runtimeIdentifier();
+        if (!runtimeIdentifier.isEmpty() && vanillaEntities.stream()
+            .noneMatch(entry -> runtimeIdentifier.equals(entry.getString("id")))) {
+            throw new IllegalArgumentException("Unknown vanilla entity runtime_identifier: " + runtimeIdentifier);
+        }
+        var entry = NbtMap.builder().putInt("rid", runtimeId)
+            .putString("id", mapping.identifier())
+            .putString("bid", runtimeIdentifier)
+            .putBoolean("hasspawnegg", false)
+            .putBoolean("summonable", false);
+        if (runtimeIdentifier.isEmpty()) {
+            // 未配置继承的实体继续使用网易分支原有的通用类型；显式继承时采用原版条目格式。
+            entry.putInt("type", 256);
+        }
+        return entry.build();
+    }
+
+    static NbtMap createRuntimeProperties(CustomEntityMapping mapping) {
+        if (!"realmsunderoath:mount_sky".equals(mapping.identifier())
+            || !"minecraft:happy_ghast".equals(mapping.runtimeIdentifier())) return null;
+        return NbtMap.builder().putString("type", mapping.identifier())
+            .putList("properties", NbtType.COMPOUND, HappyGhastEntity.CAN_MOVE_PROPERTY.nbtMap()).build();
+    }
+
+    public static void populateProperties() {
+        Registries.BEDROCK_ENTITY_PROPERTIES.get().addAll(pendingRuntimeProperties);
+        pendingRuntimeProperties.clear();
+    }
+
     public static void populate() {
+        pendingRuntimeProperties.clear();
         NbtMap nbtMap = Registries.BEDROCK_ENTITY_IDENTIFIERS.get();
 
         List<NbtMap> idlist = nbtMap.getList("idlist", NbtType.COMPOUND);
@@ -82,13 +120,14 @@ public class CustomEntityRegistryPopulator {
         // Load custom entities from mappings files
         mappingsConfigReader.loadEntityMappingsFromJson((key, item) -> {
             rid++;
-            NbtMap entityNbt = NbtMap.builder().putInt("rid", rid)
-                .putString("id", key)
-                .putString("bid", "")
-                .putBoolean("hasspawnegg", false)
-                .putBoolean("summonable", false)
-                .putInt("type", 256).build();
+            NbtMap entityNbt = createNetworkEntry(item, rid, idlist);
             nbtMaps.add(entityNbt);
+            NbtMap runtimeProperties = createRuntimeProperties(item);
+            if (runtimeProperties != null) pendingRuntimeProperties.add(runtimeProperties);
+            if (!item.runtimeIdentifier().isEmpty()) {
+                GeyserImpl.getInstance().getLogger().info("[CustomEntity] 原生运行时映射：id=" + key
+                    + " bid=" + entityNbt.getString("bid") + " rid=" + entityNbt.getInt("rid"));
+            }
 
             int start = key.indexOf(":");
 

@@ -45,14 +45,26 @@ import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.Serv
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerRotPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerStatusOnlyPacket;
 
-/**
- * Holds processing input coming in from the {@link PlayerAuthInputPacket} packet.
- */
+/** 转换玩家位置与视角输入，并区分白名单坐骑预测坐标和玩家自身坐标，避免污染玩家缓存。 */
 final class BedrockMovePlayer {
 
     static void translate(GeyserSession session, PlayerAuthInputPacket packet) {
         SessionPlayerEntity entity = session.getPlayerEntity();
         if (!session.isSpawned()) return;
+
+        Vector3f playerPosition = packet.getPosition();
+        Entity vehicle = entity.getVehicle();
+        if (vehicle != null && vehicle.getClientPredictedMount() != null
+            && packet.getInputData().contains(PlayerAuthInputData.IN_CLIENT_PREDICTED_IN_VEHICLE)) {
+            if (!session.isInClientPredictedVehicle()) {
+                // 坐骑 ID 或首骑手校验未通过；此位置不属于玩家，不能用于缓存或传送确认。
+                return;
+            }
+            // 三种坐骑的座位无水平偏移；使用实际已发送的座位偏移，不修改模型或座位。
+            // vehicle 保存的是桥接已接受的位置，越界被拒绝时仍保持纠错前的有效位置。
+            playerPosition = vehicle.getPosition().add(entity.getRiderSeatPosition());
+        }
+
 
         // We need to save player interact rotation value, as this rotation is used for Touch device and indicate where the player is touching.
         // This is needed so that we can interact with where player actually touch on the screen on Bedrock and not just from the center of the screen.
@@ -60,12 +72,12 @@ final class BedrockMovePlayer {
 
         // Ignore movement packets until Bedrock's position matches the teleported position
         if (session.getUnconfirmedTeleport() != null) {
-            session.confirmTeleport(packet.getPosition().sub(0, EntityDefinitions.PLAYER.offset(), 0));
+            session.confirmTeleport(playerPosition.sub(0, EntityDefinitions.PLAYER.offset(), 0));
             return;
         }
 
         // This is vanilla behaviour, LocalPlayer#sendPosition 1.21.8.
-        boolean actualPositionChanged = entity.getPosition().distanceSquared(packet.getPosition()) > 4e-8;
+        boolean actualPositionChanged = entity.getPosition().distanceSquared(playerPosition) > 4e-8;
 
         if (actualPositionChanged) {
             // Send book update before the player moves
@@ -127,7 +139,7 @@ final class BedrockMovePlayer {
         // Therefore, we're fixing this by allowing player to no clip to clip through the floor, not only this fixed the issue but
         // player y velocity should match java perfectly, much better than teleport player right down :)
         // Shouldn't mess with anything because beyond this point there is nothing to collide and not even entities since they're prob dead.
-        if (packet.getPosition().getY() - EntityDefinitions.PLAYER.offset() < session.getBedrockDimension().minY() - 5) {
+        if (playerPosition.getY() - EntityDefinitions.PLAYER.offset() < session.getBedrockDimension().minY() - 5) {
             // Ensuring that we still can collide with collidable entity that are also in the void (eg: boat, shulker)
             boolean possibleOnGround = false;
 
@@ -159,7 +171,7 @@ final class BedrockMovePlayer {
             session.setNoClip(!possibleOnGround);
         }
 
-        session.getWorldBorder().spawnOrMoveBorderCollision(packet.getPosition().down(EntityDefinitions.PLAYER.offset()));
+        session.getWorldBorder().spawnOrMoveBorderCollision(playerPosition.down(EntityDefinitions.PLAYER.offset()));
 
         // This takes into account no movement sent from the client, but the player is trying to move anyway.
         // (Press into a wall in a corner - you're trying to move but nothing actually happens)
@@ -181,12 +193,12 @@ final class BedrockMovePlayer {
 
             // Player position MUST be updated on our end, otherwise e.g. chunk loading breaks
             if (hasVehicle) {
-                entity.setPositionManual(packet.getPosition());
+                entity.setPositionManual(playerPosition);
                 session.getSkullCache().updateVisibleSkulls();
             }
         } else if (positionChangedAndShouldUpdate) {
-            if (isValidMove(session, entity.getPosition(), packet.getPosition())) {
-                CollisionResult result = session.getCollisionManager().adjustBedrockPosition(packet.getPosition(), isOnGround, packet.getInputData().contains(PlayerAuthInputData.HANDLE_TELEPORT));
+            if (isValidMove(session, entity.getPosition(), playerPosition)) {
+                CollisionResult result = session.getCollisionManager().adjustBedrockPosition(playerPosition, isOnGround, packet.getInputData().contains(PlayerAuthInputData.HANDLE_TELEPORT));
                 if (result != null) { // A null return value cancels the packet
                     Vector3d position = result.correctedMovement();
 
@@ -208,7 +220,7 @@ final class BedrockMovePlayer {
                         movePacket = new ServerboundMovePlayerPosPacket(javaOnGround, horizontalCollision, position.getX(), position.getY(), position.getZ());
                     }
 
-                    entity.setPositionManual(packet.getPosition());
+                    entity.setPositionManual(playerPosition);
 
                     // Send final movement changes
                     session.sendDownstreamGamePacket(movePacket);

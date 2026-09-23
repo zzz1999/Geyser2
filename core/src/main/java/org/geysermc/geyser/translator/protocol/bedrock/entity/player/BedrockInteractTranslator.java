@@ -46,6 +46,7 @@ import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.Serv
 
 import java.util.concurrent.TimeUnit;
 
+/** 转换基岩实体交互和主动下马请求，并记录自定义坐骑的离乘输入。 */
 @Translator(packet = InteractPacket.class)
 public class BedrockInteractTranslator extends PacketTranslator<InteractPacket> {
 
@@ -83,6 +84,9 @@ public class BedrockInteractTranslator extends PacketTranslator<InteractPacket> 
 
                 Entity currentVehicle = session.getPlayerEntity().getVehicle();
                 if (currentVehicle != null) {
+                    if (currentVehicle.getClientPredictedMount() != null) {
+                        currentVehicle.getClientPredictedMount().reportDismount();
+                    }
                     session.setShouldSendSneak(true);
 
                     session.setMountVehicleScheduledFuture(session.scheduleInEventLoop(() -> {

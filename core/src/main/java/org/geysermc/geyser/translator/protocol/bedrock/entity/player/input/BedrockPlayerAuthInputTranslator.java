@@ -45,6 +45,7 @@ import org.geysermc.geyser.entity.type.living.animal.nautilus.AbstractNautilusEn
 import org.geysermc.geyser.entity.type.player.PlayerEntity;
 import org.geysermc.geyser.entity.type.player.SessionPlayerEntity;
 import org.geysermc.geyser.entity.vehicle.ClientVehicle;
+import org.geysermc.geyser.entity.vehicle.ClientPredictedMountComponent;
 import org.geysermc.geyser.entity.vehicle.HorseVehicleComponent;
 import org.geysermc.geyser.level.physics.BoundingBox;
 import org.geysermc.geyser.network.GameProtocol;
@@ -66,6 +67,7 @@ import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.Serv
 import java.util.List;
 import java.util.Set;
 
+/** 转发基岩玩家输入与移动，并对白名单坐骑校验、桥接真实客户端预测位置。 */
 @Translator(packet = PlayerAuthInputPacket.class)
 public final class BedrockPlayerAuthInputTranslator extends PacketTranslator<PlayerAuthInputPacket> {
 
@@ -74,9 +76,16 @@ public final class BedrockPlayerAuthInputTranslator extends PacketTranslator<Pla
         SessionPlayerEntity entity = session.getPlayerEntity();
         Set<PlayerAuthInputData> inputData = packet.getInputData();
 
+        Entity vehicle = entity.getVehicle();
+        ClientPredictedMountComponent customMount = vehicle == null ? null : vehicle.getClientPredictedMount();
+        if (customMount != null && (!ClientPredictedMountComponent.finite(packet.getPosition())
+            || !ClientPredictedMountComponent.finite(packet.getDelta()) || !ClientPredictedMountComponent.finite(packet.getRotation()))) {
+            return;
+        }
         session.setClientTicks(packet.getTick());
-        session.setInClientPredictedVehicle(inputData.contains(PlayerAuthInputData.IN_CLIENT_PREDICTED_IN_VEHICLE)
-            && entity.getVehicle() != null && !GameProtocol.is1_21_130orHigher(session.protocolVersion()));
+        session.setInClientPredictedVehicle(customMount != null ? customMount.accepts(packet)
+            : inputData.contains(PlayerAuthInputData.IN_CLIENT_PREDICTED_IN_VEHICLE)
+                && vehicle != null && !GameProtocol.is1_21_130orHigher(session.protocolVersion()));
 
         boolean wasJumping = session.getInputCache().wasJumping();
         session.getInputCache().processInputs(entity, packet);
@@ -289,7 +298,15 @@ public final class BedrockPlayerAuthInputTranslator extends PacketTranslator<Pla
             return;
         }
 
+        if (vehicle.getClientPredictedMount() != null) {
+            vehicle.getClientPredictedMount().handleInput(packet);
+            return;
+        }
         boolean inClientPredictedVehicle = session.isInClientPredictedVehicle();
+        if (vehicle instanceof AbstractHorseEntity horse
+            && horse.getVehicleComponent() instanceof HorseVehicleComponent horseComponent) {
+            horseComponent.observeClientInput(packet);
+        }
         if (vehicle instanceof ClientVehicle) {
             // Classic input mode for boat vehicle send PADDLE_LEFT/RIGHT instead of motion values.
             boolean isMobileAndClassicMovement = packet.getInputMode() == InputMode.TOUCH && packet.getInputInteractionModel() == InputInteractionModel.CLASSIC;

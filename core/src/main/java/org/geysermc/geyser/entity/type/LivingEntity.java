@@ -82,6 +82,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+/** 同步生物的装备、属性和元数据，保留白名单客户端坐骑的行为包运动参数。 */
 @Getter
 @Setter
 public class LivingEntity extends Entity implements Tickable {
@@ -460,6 +461,12 @@ public class LivingEntity extends Entity implements Tickable {
 
     @Override
     public void tick() {
+        if (isLocallyControlledCustomMount()) {
+            // 上马前排队的插值也不能在后续 tick 覆盖客户端预测位置。
+            this.lerpSteps = 0;
+            this.dirtyPitch = this.dirtyYaw = this.dirtyHeadYaw = false;
+            return;
+        }
         if (this.lerpSteps > 0) {
             float time = 1.0f / this.lerpSteps;
             float lerpXTotal = GenericMath.lerp(this.position.getX(), this.lerpPosition.getX(), time);
@@ -562,7 +569,9 @@ public class LivingEntity extends Entity implements Tickable {
         armorEquipmentPacket.setChestplate(ItemTranslator.translateToBedrock(session, chestplate));
         armorEquipmentPacket.setLeggings(ItemTranslator.translateToBedrock(session, getItemInSlot(EquipmentSlot.LEGGINGS)));
         armorEquipmentPacket.setBoots(ItemTranslator.translateToBedrock(session, getItemInSlot(EquipmentSlot.BOOTS)));
-        armorEquipmentPacket.setBody(ItemTranslator.translateToBedrock(session, getItemInSlot(EquipmentSlot.BODY)));
+        var body = ItemTranslator.translateToBedrock(session, getItemInSlot(EquipmentSlot.BODY));
+        armorEquipmentPacket.setBody(getClientPredictedMount() == null ? body
+            : getClientPredictedMount().bodyEquipment(body));
 
         session.sendUpstreamPacket(armorEquipmentPacket);
     }
@@ -634,6 +643,11 @@ public class LivingEntity extends Entity implements Tickable {
      */
     protected void updateAttribute(Attribute javaAttribute, List<AttributeData> newAttributes) {
         if (javaAttribute.getType() instanceof AttributeType.Builtin type) {
+            // 白名单坐骑使用行为包的移动参数，不能被作为 Java 载体的狼属性覆盖。
+            if (getClientPredictedMount() != null && (type == AttributeType.Builtin.MOVEMENT_SPEED
+                || type == AttributeType.Builtin.FLYING_SPEED || type == AttributeType.Builtin.JUMP_STRENGTH)) {
+                return;
+            }
             switch (type) {
                 case MAX_HEALTH -> {
                     // Since 1.18.0, setting the max health to 0 or below causes the entity to die on Bedrock but not on Java

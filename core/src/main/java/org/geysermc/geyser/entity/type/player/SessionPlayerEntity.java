@@ -74,9 +74,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-/**
- * The entity class specifically for a {@link GeyserSession}'s player.
- */
+/** 保存当前连接玩家的基岩实体状态、输入和骑乘关系，并维护客户端控制权限。 */
 public class SessionPlayerEntity extends PlayerEntity {
     /**
      * Used to fix some inconsistencies, especially in respawning.
@@ -101,6 +99,10 @@ public class SessionPlayerEntity extends PlayerEntity {
      */
     @Getter
     private boolean isRidingInFront;
+    /** 保存已发给客户端的座位偏移，用于将白名单坐骑位置还原为玩家位置缓存。 */
+    @Getter
+    private Vector3f riderSeatPosition = Vector3f.ZERO;
+
     /**
      * Used when emulating client-side vehicles
      */
@@ -342,6 +344,7 @@ public class SessionPlayerEntity extends PlayerEntity {
 
     @Override
     public void setRiderSeatPosition(Vector3f position) {
+        this.riderSeatPosition = position == null ? Vector3f.ZERO : position;
         super.setRiderSeatPosition(position);
         this.isRidingInFront = position != null && position.getX() > 0;
     }
@@ -534,6 +537,14 @@ public class SessionPlayerEntity extends PlayerEntity {
 
     @Override
     public void setVehicle(Entity entity) {
+        if (entity != this.vehicle) {
+            if (this.vehicle != null && this.vehicle.getClientPredictedMount() != null) {
+                this.vehicle.getClientPredictedMount().resetPrediction();
+            }
+            if (entity != null && entity.getClientPredictedMount() != null) {
+                entity.getClientPredictedMount().resetPrediction();
+            }
+        }
         // For boats, we send width = 0.6 and height = 1.6 since there is otherwise a problem with player "clipping" into the boat when standing on it or running into it.
         // Having a wide bounding box fixed that, however, it is technically incorrect and creates certain problems
         // when you're actually riding the boat (https://github.com/GeyserMC/Geyser/issues/3106), since the box is way too big
@@ -556,6 +567,10 @@ public class SessionPlayerEntity extends PlayerEntity {
         this.session.updateInputLocks();
 
         super.setVehicle(entity);
+        if (entity != null && entity.getClientPredictedMount() != null) {
+            entity.getClientPredictedMount().refreshJumpLock();
+            entity.getClientPredictedMount().sendControlAttributes();
+        }
     }
   
     /**

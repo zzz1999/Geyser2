@@ -36,13 +36,16 @@ import org.cloudburstmc.math.vector.Vector3f;
 import org.cloudburstmc.protocol.bedrock.data.entity.EntityDataTypes;
 import org.cloudburstmc.protocol.bedrock.data.entity.EntityEventType;
 import org.cloudburstmc.protocol.bedrock.data.entity.EntityFlag;
+import org.cloudburstmc.protocol.bedrock.data.entity.EntityLinkData;
 import org.cloudburstmc.protocol.bedrock.data.entity.EntityProperty;
+import org.cloudburstmc.protocol.bedrock.data.entity.EntityProperties;
 import org.cloudburstmc.protocol.bedrock.packet.AddEntityPacket;
 import org.cloudburstmc.protocol.bedrock.packet.EntityEventPacket;
 import org.cloudburstmc.protocol.bedrock.packet.MoveEntityAbsolutePacket;
 import org.cloudburstmc.protocol.bedrock.packet.MoveEntityDeltaPacket;
 import org.cloudburstmc.protocol.bedrock.packet.RemoveEntityPacket;
 import org.cloudburstmc.protocol.bedrock.packet.SetEntityDataPacket;
+import org.cloudburstmc.protocol.bedrock.packet.SetEntityLinkPacket;
 import org.geysermc.geyser.api.entity.property.BatchPropertyUpdater;
 import org.geysermc.geyser.api.entity.property.GeyserEntityProperty;
 import org.geysermc.geyser.api.entity.type.GeyserEntity;
@@ -55,6 +58,8 @@ import org.geysermc.geyser.entity.type.living.MobEntity;
 import org.geysermc.geyser.entity.type.player.PlayerEntity;
 import org.geysermc.geyser.entity.type.player.SessionPlayerEntity;
 import org.geysermc.geyser.entity.vehicle.ClientVehicle;
+import org.geysermc.geyser.entity.vehicle.ClientPredictedMountComponent;
+import org.geysermc.geyser.input.InputLocksFlag;
 import org.geysermc.geyser.item.Items;
 import org.geysermc.geyser.registry.Registries;
 import org.geysermc.geyser.item.type.Item;
@@ -85,6 +90,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Consumer;
 
+/** 保存 Java 实体状态并转换基岩版数据；仅三种白名单坐骑额外桥接客户端预测，其他换模不改变控制方式。 */
 @Getter
 @Setter
 public class Entity implements GeyserEntity {
@@ -120,7 +126,11 @@ public class Entity implements GeyserEntity {
     protected boolean onGround;
 
     protected EntityDefinition<?> definition;
-    private String curIdentifier;
+    /** 自定义客户端标识；definition 仍保留 Java 类型与碰撞，白名单坐骑额外挂接预测桥接组件。 */
+    @Setter(AccessLevel.NONE)
+    private @Nullable String curIdentifier;
+    @Setter(AccessLevel.NONE)
+    private @Nullable ClientPredictedMountComponent clientPredictedMount;
 
     /**
      * Indicates if the entity has been initialized and spawned
@@ -209,8 +219,15 @@ public class Entity implements GeyserEntity {
     }
 
     public void spawnEntity() {
+        spawnEntityPacket();
+    }
+
+    private void spawnEntityPacket() {
+        if (clientPredictedMount != null) {
+            clientPredictedMount.applyMetadata();
+        }
         AddEntityPacket addEntityPacket = new AddEntityPacket();
-        addEntityPacket.setIdentifier(definition.identifier());
+        addEntityPacket.setIdentifier(curIdentifier == null ? definition.identifier() : curIdentifier);
         addEntityPacket.setRuntimeEntityId(geyserId);
         addEntityPacket.setUniqueEntityId(geyserId);
         addEntityPacket.setPosition(spawnPosition(position));
@@ -244,11 +261,21 @@ public class Entity implements GeyserEntity {
         }
 
         dirtyMetadata.apply(addEntityPacket.getMetadata());
+        if (curIdentifier != null) {
+            applyNetworkProperties(addEntityPacket.getProperties());
+        }
+        if (clientPredictedMount != null) {
+            clientPredictedMount.addMovementAttributes(addEntityPacket.getAttributes());
+        }
         addAdditionalSpawnData(addEntityPacket);
 
         valid = true;
 
         session.sendUpstreamPacket(addEntityPacket);
+        if (clientPredictedMount != null) clientPredictedMount.sendControlEquipment();
+        if (clientPredictedMount != null && session.getPlayerEntity().getVehicle() == this) {
+            clientPredictedMount.sendControlAttributes();
+        }
 
         flagsDirty = false;
 
@@ -260,51 +287,76 @@ public class Entity implements GeyserEntity {
     }
 
     public void spawnEntity(String identifier) {
-        AddEntityPacket addEntityPacket = new AddEntityPacket();
-        addEntityPacket.setIdentifier(identifier);
-        addEntityPacket.setRuntimeEntityId(geyserId);
-        addEntityPacket.setUniqueEntityId(geyserId);
-        addEntityPacket.setPosition(position);
-        addEntityPacket.setMotion(motion);
-        addEntityPacket.setRotation(Vector2f.from(pitch, yaw));
-        addEntityPacket.setHeadRotation(headYaw);
-        addEntityPacket.setBodyRotation(yaw); // TODO: This should be bodyYaw
-        addEntityPacket.getMetadata().putFlags(flags);
+        this.curIdentifier = identifier;
+        updateClientPredictedMount();
+        spawnEntityPacket();
+    }
 
-        if (nametag.contains("@size_")) {
-            int start = nametag.indexOf("@size_");
-            int end = nametag.indexOf("@", start + 6);
-            if (start != -1 && end != -1) {
-                String size = nametag.substring(start + 6, end);
-                try {
-                    float scale = Float.parseFloat(size);
-                    dirtyMetadata.put(EntityDataTypes.SCALE, scale);
-                    dirtyMetadata.put(EntityDataTypes.NAME, nametag.replace("@size_" + size + "@", ""));
-                    this.nametag = nametag.replace("@size_" + size + "@", "");
-                } catch (NumberFormatException ignored) {
-                }
+    private void setCustomEntityIdentifier(String identifier) {
+        EntityDefinition<?> customDefinition = Registries.CUSTOM_ENTITY_DEFINITIONS.get(identifier);
+        if (customDefinition == null) {
+            // 配置仍保留旧的短别名，同时允许使用资源包中的完整命名空间标识。
+            customDefinition = Registries.CUSTOM_ENTITY_DEFINITIONS.values().stream()
+                .filter(candidate -> identifier.equals(candidate.identifier()))
+                .findFirst().orElse(null);
+        }
+        if (customDefinition == null || Objects.equals(curIdentifier, customDefinition.identifier())) {
+            return;
+        }
+
+        curIdentifier = customDefinition.identifier();
+        updateClientPredictedMount();
+        if (!valid) {
+            return;
+        }
+
+        // 只重建客户端外观；despawnEntity 会解除本地乘客绑定，不能用于换模。
+        RemoveEntityPacket removeEntityPacket = new RemoveEntityPacket();
+        removeEntityPacket.setUniqueEntityId(geyserId);
+        session.sendUpstreamPacket(removeEntityPacket);
+        dirtyMetadata.markAllDirty();
+        spawnEntityPacket();
+
+        if (vehicle != null) {
+            int seat = vehicle.getPassengers().indexOf(this);
+            if (seat >= 0) {
+                restoreEntityLink(vehicle, this, seat);
+                updateMountOffset();
             }
         }
-
-
-        dirtyMetadata.apply(addEntityPacket.getMetadata());
-        if (propertyManager != null) {
-            propertyManager.applyIntProperties(addEntityPacket.getProperties().getIntProperties());
-            propertyManager.applyFloatProperties(addEntityPacket.getProperties().getFloatProperties());
+        for (int i = 0; i < passengers.size(); i++) {
+            Entity passenger = passengers.get(i);
+            if (passenger != null) {
+                restoreEntityLink(this, passenger, i);
+            }
         }
-        addAdditionalSpawnData(addEntityPacket);
+        updatePassengerOffsets();
+    }
 
-        valid = true;
-
-        session.sendUpstreamPacket(addEntityPacket);
-
-        flagsDirty = false;
-
-        if (session.getGeyser().config().debugMode() && PRINT_ENTITY_SPAWN_DEBUG) {
-            EntityType type = definition.entityType();
-            String name = type != null ? type.name() : getClass().getSimpleName();
-            session.getGeyser().getLogger().debug("Spawned entity " + name + " at location " + position + " with id " + geyserId + " (java id " + entityId + ")");
+    private void updateClientPredictedMount() {
+        if (clientPredictedMount != null) {
+            clientPredictedMount.restoreMetadata();
         }
+        clientPredictedMount = ClientPredictedMountComponent.supports(curIdentifier)
+            ? new ClientPredictedMountComponent(this) : null;
+        if (clientPredictedMount != null) {
+            clientPredictedMount.applyMetadata();
+            clientPredictedMount.refreshJumpLock();
+        } else if (session.getPlayerEntity().getVehicle() == this) {
+            session.setLockInput(InputLocksFlag.JUMP, doesJumpDismount());
+            session.updateInputLocks();
+        }
+    }
+
+    public boolean isLocallyControlledCustomMount() {
+        return clientPredictedMount != null && clientPredictedMount.isControllingPlayer();
+    }
+
+    private void restoreEntityLink(Entity mount, Entity passenger, int seat) {
+        SetEntityLinkPacket linkPacket = new SetEntityLinkPacket();
+        EntityLinkData.Type linkType = seat == 0 ? EntityLinkData.Type.RIDER : EntityLinkData.Type.PASSENGER;
+        linkPacket.setEntityLink(new EntityLinkData(mount.getGeyserId(), passenger.getGeyserId(), linkType, false, false, 0f));
+        session.sendUpstreamPacket(linkPacket);
     }
 
     /**
@@ -378,6 +430,9 @@ public class Entity implements GeyserEntity {
      * Whether server movement for this entity should be interpolated.
      */
     public boolean shouldLerp() {
+        if (isLocallyControlledCustomMount()) {
+            return false;
+        }
         // Do not interpolate vehicles whose movement is already predicted locally or by the client.
         if (this instanceof ClientVehicle clientVehicle) {
             return !clientVehicle.shouldSimulateMovement() && !session.isInClientPredictedVehicle();
@@ -524,6 +579,9 @@ public class Entity implements GeyserEntity {
      * Sends the Bedrock metadata to the client
      */
     public void updateBedrockMetadata() {
+        if (clientPredictedMount != null) {
+            clientPredictedMount.applyMetadata();
+        }
         if (!isValid()) {
             return;
         }
@@ -536,10 +594,7 @@ public class Entity implements GeyserEntity {
                 flagsDirty = false;
             }
             dirtyMetadata.apply(entityDataPacket.getMetadata());
-            if (propertyManager != null && propertyManager.hasProperties()) {
-                propertyManager.applyIntProperties(entityDataPacket.getProperties().getIntProperties());
-                propertyManager.applyFloatProperties(entityDataPacket.getProperties().getFloatProperties());
-            }
+            applyNetworkProperties(entityDataPacket.getProperties());
             session.sendUpstreamPacket(entityDataPacket);
         }
     }
@@ -555,9 +610,18 @@ public class Entity implements GeyserEntity {
         if (propertyManager != null && propertyManager.hasProperties()) {
             SetEntityDataPacket entityDataPacket = new SetEntityDataPacket();
             entityDataPacket.setRuntimeEntityId(geyserId);
-            propertyManager.applyIntProperties(entityDataPacket.getProperties().getIntProperties());
-            propertyManager.applyFloatProperties(entityDataPacket.getProperties().getFloatProperties());
+            applyNetworkProperties(entityDataPacket.getProperties());
             session.sendUpstreamPacket(entityDataPacket);
+        }
+    }
+
+    private void applyNetworkProperties(EntityProperties properties) {
+        if (propertyManager != null) {
+            propertyManager.applyIntProperties(properties.getIntProperties());
+            propertyManager.applyFloatProperties(properties.getFloatProperties());
+        }
+        if (clientPredictedMount != null) {
+            clientPredictedMount.applyProperties(properties);
         }
     }
 
@@ -651,14 +715,7 @@ public class Entity implements GeyserEntity {
                 int end = nametag.indexOf("@", start + 5);
                 if (start != -1 && end != -1) {
                     String identifier = nametag.substring(start + 5, end);
-                    if (this.curIdentifier == null || this.curIdentifier.equals(identifier)) {
-
-                        if (Registries.CUSTOM_ENTITY_DEFINITIONS.containsKey(identifier)) {
-                            this.despawnEntity();
-                            this.definition = Registries.CUSTOM_ENTITY_DEFINITIONS.get(identifier);
-                            this.spawnEntity(this.definition.identifier());
-                        }
-                    }
+                    setCustomEntityIdentifier(identifier);
                     nametag = nametag.replace("@cet_" + identifier + "@", "");
                 }
             }
@@ -809,7 +866,7 @@ public class Entity implements GeyserEntity {
      * @return whether the entity can be dismounted when pressing jump.
      */
     public boolean doesJumpDismount() {
-        return true;
+        return clientPredictedMount == null;
     }
 
     /**
@@ -995,8 +1052,7 @@ public class Entity implements GeyserEntity {
         if (propertyManager.hasProperties()) {
             SetEntityDataPacket packet = new SetEntityDataPacket();
             packet.setRuntimeEntityId(getGeyserId());
-            propertyManager.applyFloatProperties(packet.getProperties().getFloatProperties());
-            propertyManager.applyIntProperties(packet.getProperties().getIntProperties());
+            applyNetworkProperties(packet.getProperties());
             if (immediate) {
                 session.sendUpstreamPacketImmediately(packet);
             } else {

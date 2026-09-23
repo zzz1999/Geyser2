@@ -25,12 +25,15 @@
 
 package org.geysermc.geyser.translator.protocol.java.entity;
 
+import org.cloudburstmc.math.vector.Vector3f;
+import org.cloudburstmc.protocol.bedrock.packet.SetEntityMotionPacket;
 import org.geysermc.geyser.entity.type.Entity;
 import org.geysermc.geyser.session.GeyserSession;
 import org.geysermc.geyser.translator.protocol.PacketTranslator;
 import org.geysermc.geyser.translator.protocol.Translator;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.ClientboundMoveVehiclePacket;
 
+/** 转发服务器对当前载具的显式位置纠错，并清除白名单客户端坐骑的旧速度。 */
 @Translator(packet = ClientboundMoveVehiclePacket.class)
 public class JavaMoveVehicleTranslator extends PacketTranslator<ClientboundMoveVehiclePacket> {
 
@@ -39,6 +42,13 @@ public class JavaMoveVehicleTranslator extends PacketTranslator<ClientboundMoveV
         Entity entity = session.getPlayerEntity().getVehicle();
         if (entity == null) return;
 
+        if (entity.isLocallyControlledCustomMount()) {
+            entity.setMotion(Vector3f.ZERO);
+            var motion = new SetEntityMotionPacket();
+            motion.setRuntimeEntityId(entity.getGeyserId());
+            motion.setMotion(Vector3f.ZERO);
+            session.sendUpstreamPacket(motion);
+        }
         entity.moveAbsolute(packet.getPosition().toFloat(), packet.getYRot(), packet.getXRot(), false, true);
         // TODO send serverbound move vehicle packet
     }

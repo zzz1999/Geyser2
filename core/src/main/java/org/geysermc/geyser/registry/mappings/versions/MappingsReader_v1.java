@@ -81,7 +81,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 /**
- * A class responsible for reading custom item and block mappings from a JSON file
+ * 读取第一版自定义物品、方块和实体映射，校验配置并保留对应协议属性。
  */
 public class MappingsReader_v1 extends MappingsReader {
     private static final String NETEASE_FRAME_ANIMATION_MAPPING = "netease_frame_anim_in_scene";
@@ -858,7 +858,16 @@ public class MappingsReader_v1 extends MappingsReader {
             }
         }
 
-        return new CustomEntityMapping(identifier, width, height);
+        String runtimeIdentifier = "";
+        if (node.has("runtime_identifier")) {
+            JsonElement runtime = node.get("runtime_identifier");
+            if (!runtime.isJsonPrimitive() || !runtime.getAsJsonPrimitive().isString()
+                || !runtime.getAsString().matches("minecraft:[a-z0-9_./-]+")) {
+                throw new InvalidCustomMappingsFileException("runtime_identifier must name a vanilla minecraft entity");
+            }
+            runtimeIdentifier = runtime.getAsString();
+        }
+        return new CustomEntityMapping(identifier, width, height, runtimeIdentifier);
     }
 
     /**

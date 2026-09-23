@@ -31,13 +31,14 @@ import org.geysermc.geyser.session.GeyserSession;
 import org.geysermc.geyser.translator.protocol.PacketTranslator;
 import org.geysermc.geyser.translator.protocol.Translator;
 
+/** 转换 Java 实体常规状态广播，仅过滤本连接控制的白名单坐骑回显。 */
 @Translator(packet = ClientboundRotateHeadPacket.class)
 public class JavaRotateHeadTranslator extends PacketTranslator<ClientboundRotateHeadPacket> {
 
     @Override
     public void translate(GeyserSession session, ClientboundRotateHeadPacket packet) {
         Entity entity = session.getEntityCache().getEntityByJavaId(packet.getEntityId());
-        if (entity == null) return;
+        if (entity == null || entity.isLocallyControlledCustomMount()) return;
 
         entity.updateHeadLookRotation(packet.getHeadYaw());
     }
